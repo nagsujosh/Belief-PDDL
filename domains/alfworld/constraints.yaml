@@ -1,0 +1,24 @@
+mutex:
+  # Open and Closed states are mutually exclusive
+  - ["open(r)", "closed(r)"]
+  # Can't be in multiple places
+  - ["in(x,r1)", "in(x,r2)"] # if r1 != r2
+  - ["on(x,s1)", "on(x,s2)"] # if s1 != s2
+  # Can't be on something and in something else and held
+  - ["in(x,r)", "on(x,s)"]
+  - ["holding(agent,x)", "in(x,r)"]
+  - ["holding(agent,x)", "on(x,s)"]
+  # Agent is only in one location
+  - ["at(agent,l1)", "at(agent,l2)"] # if l1 != l2
+
+implications:
+  - if: "open(r)"
+    then: "not closed(r)"
+  - if: "closed(r)"
+    then: "not open(r)"
+
+visibility_rules:
+  # The most important dynamic partial observability constraint for ALFWorld:
+  # If an object is inside a receptacle, and the receptacle is NOT completely open, you cannot see it.
+  - if: "in(x,r) and closed(r)"
+    then: "not visible(x)"

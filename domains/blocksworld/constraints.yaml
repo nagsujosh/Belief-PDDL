@@ -1,0 +1,27 @@
+mutex:
+  # An object can only be on one thing
+  - ["on(x,y)", "on(x,z)"] # if y != z
+  # An object cannot be on the table and on another object
+  - ["on_table(x)", "on(x,y)"]
+  # If an object is held, it cannot be on anything
+  - ["holding(agent,x)", "on_table(x)"]
+  - ["holding(agent,x)", "on(x,y)"]
+  # Arm can only hold one thing
+  - ["holding(agent,x)", "holding(agent,y)"] # if x != y
+  # Arm is either empty or holding something
+  - ["holding(agent,x)", "arm_empty()"]
+
+implications:
+  # If x is on y, y is not clear
+  - if: "on(x,y)"
+    then: "not clear(y)"
+  # If arm is holding x, x is not clear
+  - if: "holding(agent,x)"
+    then: "not clear(x)"
+
+visibility_rules:
+  # In Blocksworld, if x is behind y (from agent view), x is not visible
+  # Let's start with a simpler assumed rule: if something is on top, the thing underneath MIGHT be visible or not based on real rendering.
+  # But we can say: held things are always visible.
+  - if: "holding(agent,x)"
+    then: "visible(x)"

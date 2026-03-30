@@ -1,0 +1,25 @@
+unary:
+  - name: visible
+    arg_types: [object]
+  - name: open
+    arg_types: [receptacle]
+  - name: closed
+    arg_types: [receptacle]
+  - name: clean
+    arg_types: [object]
+  - name: heated
+    arg_types: [object]
+  - name: cooled
+    arg_types: [object]
+  - name: toggled
+    arg_types: [receptacle]
+
+binary:
+  - name: in
+    arg_types: [object, receptacle]
+  - name: on
+    arg_types: [object, receptacle]
+  - name: holding
+    arg_types: [agent, object]
+  - name: at
+    arg_types: [agent, location]

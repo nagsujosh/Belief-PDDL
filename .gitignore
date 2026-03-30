@@ -1,0 +1,26 @@
+# Environments
+venv/
+env/
+.env
+
+# Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Outputs & Data (Keep pure config, ignore generated data)
+outputs/
+data/raw/
+*.log
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+
+# ML Models & Unity Data (ALFWorld HuggingFace caches if local)
+*.ckpt
+*.pt
+*.bin
+alfworld_data/

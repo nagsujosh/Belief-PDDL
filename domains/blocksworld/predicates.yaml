@@ -1,0 +1,15 @@
+unary:
+  - name: visible
+    arg_types: [object]
+  - name: on_table
+    arg_types: [object]
+  - name: clear
+    arg_types: [object]
+  - name: arm_empty
+    arg_types: []
+
+binary:
+  - name: on
+    arg_types: [object, object]
+  - name: holding
+    arg_types: [agent, object]
