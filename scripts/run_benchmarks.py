@@ -19,31 +19,35 @@ class AIBenchmarker:
         self.mode = mode
         self.noise = noise_level
         self.k = k_worlds
-        self.env = MockBlocksworldEnv(num_blocks=5)
+        self.env = MockBlocksworldEnv(num_blocks=3)
         self.updater = BeliefUpdater(alpha=1.0)
         self.projector = BeliefProjector("domains/blocksworld/constraints.yaml")
         
         # Disable info gain/sensing depending on mode
-        sensing = ["reveal"] if self.mode == "full_top_k" else []
+        sensing = ["reveal_side"] if self.mode == "full_top_k" else []
         self.planner = SampleBeliefPlanner(
             DeterministicPlanner("domains/blocksworld/domain.pddl"), 
             sensing_actions=sensing
         )
         self.metrics = []
 
-    def _simulate_vlm(self, gt_predicates, noise_level):
-        """Simulate a VLM returning noisy logits. Higher noise = worse accuracy."""
+    def _simulate_vlm(self, gt_predicates, noise_level, revealed_blocks):
+        """Simulate a VLM returning noisy logits. Revealed objects have perfect 0.0 noise!"""
         raw_logits = {}
-        # In reality, the VLM proposes thousands of truths. We simulate a subset mapping blocks.
+        preds_to_guess = ["arm_empty()"]
         for b1 in self.env.blocks:
-            preds_to_guess = [f"clear({b1})", f"on_table({b1})", f"holding(agent,{b1})"]
+            preds_to_guess.extend([f"clear({b1})", f"on_table({b1})", f"holding({b1})", f"visible({b1})"])
             for b2 in self.env.blocks:
                 if b1 != b2: preds_to_guess.append(f"on({b1},{b2})")
                 
             for p in preds_to_guess:
                 is_true = p in gt_predicates
-                # With probability `noise_level`, the VLM hallucinates the exact opposite.
-                if random.random() < noise_level:
+                # If active sensing revealed the object, visual uncertainty collapses entirely.
+                is_revealed = any(b in p for b in revealed_blocks)
+                active_noise = 0.0 if is_revealed else noise_level
+                
+                # With probability `active_noise`, the VLM hallucinates the exact opposite.
+                if random.random() < active_noise:
                     raw_logits[p] = 0.95 if not is_true else 0.05
                 else:
                     raw_logits[p] = 0.95 if is_true else 0.05
@@ -67,9 +71,11 @@ class AIBenchmarker:
                 "replans": 0
             }
             
+            revealed_blocks = set()
+            
             for t in range(25):
                 noisy_vision_states = self.env._get_gt_predicates()
-                raw_logits = self._simulate_vlm(noisy_vision_states, self.noise)
+                raw_logits = self._simulate_vlm(noisy_vision_states, self.noise, revealed_blocks)
                 
                 # Belief Structure Ablation
                 if self.mode == "threshold":
@@ -85,7 +91,7 @@ class AIBenchmarker:
                 # Metric: Measure raw VLM Inconsistency
                 for b in self.env.blocks:
                     # Tracking physical contradictions (Targeting Table 2 / Figure 3)
-                    if belief_state.get_belief(f"holding(agent,{b})") > 0.5 and belief_state.get_belief(f"on_table({b})") > 0.5:
+                    if belief_state.get_belief(f"holding({b})") > 0.5 and belief_state.get_belief(f"on_table({b})") > 0.5:
                         ep_trace["inconsistency_events"] += 1
 
                 # Projection Structure Ablation
@@ -103,7 +109,9 @@ class AIBenchmarker:
                 # Deterministic Planning Execution
                 pddl_objects = self.env.blocks + ["agent"]
                 cmd, args = self.planner.select_action(belief_state.probs, top_k, goal_str, pddl_objects)
-                if cmd == "reveal": ep_trace["sensing_actions"] += 1
+                if cmd == "reveal_side": 
+                    ep_trace["sensing_actions"] += 1
+                    revealed_blocks.add(args[0])
                 
                 obs, reward, done = self.env.step(cmd, args)
                 if done:
