@@ -14,6 +14,13 @@ class MockBlocksworldEnv:
     def __init__(self, num_blocks=3):
         self.num_blocks = num_blocks
         self.blocks = [f"block_{i}" for i in range(num_blocks)]
+        self.block_colors = {
+            "block_0": "red",
+            "block_1": "blue",
+            "block_2": "green",
+            "block_3": "yellow",
+            "block_4": "purple"
+        }
         self.reset()
         
     def reset(self):
@@ -61,19 +68,38 @@ class MockBlocksworldEnv:
         return self._get_obs()
         
     def _render(self) -> np.ndarray:
-        # Mock simple render based on state
+        # Authentic rendering mapping geometry to CLIP spatial comprehension semantics
         img = Image.new("RGB", (256, 256), color="white")
         draw = ImageDraw.Draw(img)
         
         # Ground
         draw.rectangle([(0, 200), (256, 256)], fill="grey")
         
-        # Draw some arbitrary boxes for visible blocks
-        x = 50
-        for b in self.state["visible"]:
-            draw.rectangle([(x, 150), (x+40, 190)], fill="blue", outline="black")
-            draw.text((x+5, 165), b[-1], fill="white")
-            x += 60
+        # We mathematically resolve the Z-axis Z-buffer drawing from the procedural arrays directly
+        x_positions = {b: 50 + i*60 for i, b in enumerate(self.state["on_table"])}
+        
+        for root, x in x_positions.items():
+            h = 0
+            curr = root
+            while curr:
+                if curr in self.state["visible"]:
+                    color = self.block_colors.get(curr, "black")
+                    y = 160 - (h * 40)
+                    draw.rectangle([(x, y), (x+40, y+40)], fill=color, outline="black")
+                
+                # Trace procedural geometric bounds recursively 
+                next_block = None
+                for child, parent in self.state["on"].items():
+                    if parent == curr:
+                        next_block = child
+                        break
+                curr = next_block
+                h += 1
+                
+        # Draw floaters (if holding)
+        if self.state["holding"]:
+            color = self.block_colors.get(self.state["holding"], "black")
+            draw.rectangle([(100, 30), (140, 70)], fill=color, outline="black")
             
         return np.array(img)
 

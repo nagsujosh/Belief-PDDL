@@ -1,70 +1,83 @@
 import torch
 import numpy as np
 from PIL import Image
+
 try:
     from transformers import CLIPProcessor, CLIPModel
 except ImportError:
     CLIPProcessor, CLIPModel = None, None
 
+
 class CLIPVisionBackbone:
     """
-    A real production Vision Language Model (VLM) binding for Belief-PDDL.
-    Uses OpenAI's CLIP architecture to convert RGB frames and Object classes
-    into high-fidelity contrastive similarity logits, completely replacing 
-    the numerical Mock generator used in procedural testing.
+    Real Vision-Language Model backbone using OpenAI CLIP.
+    
+    Provides zero-shot predicate scoring by comparing rendered RGB frames
+    of the blocksworld environment against natural-language predicate queries.
+    All similarity scores are L2-normalized cosine similarities that feed
+    directly into the Bayesian BeliefUpdater.
     """
-    def __init__(self, model_name="openai/clip-vit-base-patch32", device=None):
-        if device is None:
-            if torch.cuda.is_available(): device = "cuda"
-            else: device = "cpu"
-            
-        self.device = torch.device(device)
-        print(f"Loading CLIP model {model_name} onto {self.device} NVIDIA CUDA Backend...")
-        
-        if CLIPModel is None:
-            raise ImportError("Please install `transformers` to use the CLIPVisionBackbone.")
-            
-        self.model = CLIPModel.from_pretrained(model_name).to(self.device)
-        self.processor = CLIPProcessor.from_pretrained(model_name)
-        # Store a cache for text embeddings since vocabulary rarely changes per episode
-        self._text_cache = {} 
 
-    def extract_image_features(self, rgb_image: np.ndarray) -> torch.Tensor:
+    def __init__(self, model_name="openai/clip-vit-base-patch32", device=None):
+        if CLIPModel is None:
+            raise ImportError("Install `transformers` to use CLIPVisionBackbone: pip install transformers")
+
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        self.device = torch.device(device)
+        print(f"[CLIP] Loading {model_name} on {self.device}...")
+
+        self.model = CLIPModel.from_pretrained(model_name).to(self.device).eval()
+        self.processor = CLIPProcessor.from_pretrained(model_name)
+        self._text_embed_cache: dict[str, torch.Tensor] = {}
+        print(f"[CLIP] Model ready.")
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def encode_image(self, rgb_image: np.ndarray) -> torch.Tensor:
         """
-        Processes a full or cropped RGB image into visual feature vectors.
+        Encode a (H, W, 3) uint8 numpy array into a unit-norm CLIP image embedding.
+        Returns Tensor of shape (1, D).
         """
-        pil_img = Image.fromarray(rgb_image.astype('uint8'), 'RGB')
+        pil_img = Image.fromarray(rgb_image.astype("uint8"), "RGB")
         inputs = self.processor(images=pil_img, return_tensors="pt").to(self.device)
         with torch.no_grad():
-            image_embeds = self.model.get_image_features(**inputs)
-        return image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
+            # Use vision_model directly to get a plain Tensor (pooler_output shape: [1, D])
+            vision_out = self.model.vision_model(**inputs)
+            embeds = self.model.visual_projection(vision_out.pooler_output)
+        return embeds / embeds.norm(p=2, dim=-1, keepdim=True)
 
-    def extract_text_features(self, text_descriptions: list[str]) -> torch.Tensor:
+    def encode_texts(self, texts: list[str]) -> torch.Tensor:
         """
-        Pre-computes text representation of objects or predicates.
-        e.g., ["an apple", "a microwave", "an apple inside a microwave"]
+        Encode a list of text strings into unit-norm CLIP text embeddings.
+        Returns Tensor of shape (N, D). Results are cached by string.
         """
-        missing = [t for t in text_descriptions if t not in self._text_cache]
+        missing = [t for t in texts if t not in self._text_embed_cache]
         if missing:
-            inputs = self.processor(text=missing, return_tensors="pt", padding=True).to(self.device)
+            inputs = self.processor(text=missing, return_tensors="pt", padding=True,
+                                    truncation=True, max_length=77).to(self.device)
             with torch.no_grad():
-                text_embeds = self.model.get_text_features(**inputs)
-            text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
+                text_out = self.model.text_model(**inputs)
+                embeds = self.model.text_projection(text_out.pooler_output)
+            embeds = embeds / embeds.norm(p=2, dim=-1, keepdim=True)
             for i, t in enumerate(missing):
-                self._text_cache[t] = text_embeds[i].unsqueeze(0)
-                
-        # Stack from cache
-        tensors = [self._text_cache[t] for t in text_descriptions]
-        return torch.cat(tensors, dim=0)
+                self._text_embed_cache[t] = embeds[i].unsqueeze(0).cpu()
 
-    def compute_similarity(self, image_features: torch.Tensor, text_features: torch.Tensor) -> np.ndarray:
+        tensors = [self._text_embed_cache[t] for t in texts]
+        return torch.cat(tensors, dim=0).to(self.device)
+
+    def zero_shot_prob(self, image_embed: torch.Tensor,
+                        positive_text: str, negative_text: str) -> float:
         """
-        Returns raw contrastive logits (temperature scaled natively by CLIP).
-        These exact logits MUST be passed through `calibrator.py` before 
-        hitting the BeliefUpdater tracking matrices!
+        Compute P(positive | image) via softmax over [positive, negative] logits.
+        Returns a float in (0, 1).
         """
+        text_embeds = self.encode_texts([positive_text, negative_text])  # (2, D)
         with torch.no_grad():
-            # Cosine similarity scaled by logit scaling factor from CLIP
             logit_scale = self.model.logit_scale.exp()
-            logits_per_image = logit_scale * image_features @ text_features.T
-        return logits_per_image.cpu().numpy()
+            logits = logit_scale * (image_embed @ text_embeds.T)  # (1, 2)
+        probs = torch.softmax(logits[0], dim=0)
+        return float(probs[0].cpu())

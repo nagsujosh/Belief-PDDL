@@ -12,6 +12,9 @@ from src.belief.update import BeliefUpdater
 from src.belief.projection import BeliefProjector
 from src.planning.deterministic_planner import DeterministicPlanner
 from src.planning.sample_belief_planner import SampleBeliefPlanner
+from src.perception.clip_vision import CLIPVisionBackbone
+import torch
+import numpy as np
 
 class AIBenchmarker:
     def __init__(self, mode="full_top_k", noise_level=0.3, k_worlds=3):
@@ -23,6 +26,12 @@ class AIBenchmarker:
         self.updater = BeliefUpdater(alpha=1.0)
         self.projector = BeliefProjector("domains/blocksworld/constraints.yaml")
         
+        print("Loading Authentic CLIP Vision Backbone into Benchmark Array...")
+        self.vlm = CLIPVisionBackbone(device="cpu")
+        # Warmup: one forward pass so first episode timing isn't skewed
+        _w = self.vlm.encode_image(np.zeros((256, 256, 3), dtype=np.uint8))
+        print(f"[CLIP] Warmup embed shape: {_w.shape}")
+        
         # Disable info gain/sensing depending on mode
         sensing = ["reveal_side"] if self.mode == "full_top_k" else []
         self.planner = SampleBeliefPlanner(
@@ -31,26 +40,56 @@ class AIBenchmarker:
         )
         self.metrics = []
 
-    def _simulate_vlm(self, gt_predicates, noise_level, revealed_blocks):
-        """Simulate a VLM returning noisy logits. Revealed objects have perfect 0.0 noise!"""
+    def _semantic_queries(self, p: str):
+        colors = {"block_0": "red", "block_1": "blue", "block_2": "green", "block_3": "yellow", "block_4": "purple"}
+        if p.startswith("clear("):
+            b = p[6:-1]; c = colors.get(b)
+            return f"A {c} block with no blocks on top of it.", f"A {c} block with another block resting on top of it."
+        elif p.startswith("on_table("):
+            b = p[9:-1]; c = colors.get(b)
+            return f"A {c} block touching the grey table.", f"A {c} block stacked high above the grey table."
+        elif p.startswith("holding("):
+            b = p[8:-1]; c = colors.get(b)
+            return f"A {c} block floating in the air.", f"A {c} block resting still down on the stack."
+        elif p.startswith("visible("):
+            b = p[8:-1]; c = colors.get(b)
+            return f"A {c} block.", f"There is no {c} block."
+        elif p.startswith("arm_empty()"):
+            return "No blocks are floating.", "A block is floating."
+        elif p.startswith("on("):
+            b1, b2 = p[3:-1].split(",")
+            c1 = colors.get(b1.strip()); c2 = colors.get(b2.strip())
+            return f"A {c1} block exactly on top of a {c2} block.", f"A {c1} block is NOT touching the {c2} block."
+        return p, ""
+
+    def _run_vlm(self, rgb, revealed_blocks):
+        """Score predicates from real CLIP embeddings of the rendered scene."""
+        image_embed = self.vlm.encode_image(rgb)  # (1, D) unit-norm tensor
         raw_logits = {}
+
         preds_to_guess = ["arm_empty()"]
         for b1 in self.env.blocks:
             preds_to_guess.extend([f"clear({b1})", f"on_table({b1})", f"holding({b1})", f"visible({b1})"])
             for b2 in self.env.blocks:
-                if b1 != b2: preds_to_guess.append(f"on({b1},{b2})")
-                
-            for p in preds_to_guess:
-                is_true = p in gt_predicates
-                # If active sensing revealed the object, visual uncertainty collapses entirely.
-                is_revealed = any(b in p for b in revealed_blocks)
-                active_noise = 0.0 if is_revealed else noise_level
-                
-                # With probability `active_noise`, the VLM hallucinates the exact opposite.
-                if random.random() < active_noise:
-                    raw_logits[p] = 0.95 if not is_true else 0.05
-                else:
-                    raw_logits[p] = 0.95 if is_true else 0.05
+                if b1 != b2:
+                    preds_to_guess.append(f"on({b1},{b2})")
+
+        gt = self.env._get_gt_predicates()  # used only for revealed blocks
+        for p in preds_to_guess:
+            is_revealed = any(b in p for b in revealed_blocks)
+            if is_revealed:
+                raw_logits[p] = 0.95 if p in gt else 0.05
+                continue
+
+            pos_text, neg_text = self._semantic_queries(p)
+            if not neg_text:
+                raw_logits[p] = 0.5
+                continue
+
+            # Real zero-shot CLIP probability
+            prob = self.vlm.zero_shot_prob(image_embed, pos_text, neg_text)
+            raw_logits[p] = prob
+
         return raw_logits
 
     def run_sweep(self, max_episodes=5):
@@ -74,8 +113,8 @@ class AIBenchmarker:
             revealed_blocks = set()
             
             for t in range(25):
-                noisy_vision_states = self.env._get_gt_predicates()
-                raw_logits = self._simulate_vlm(noisy_vision_states, self.noise, revealed_blocks)
+                obs = self.env._get_obs()
+                raw_logits = self._run_vlm(obs.rgb, revealed_blocks)
                 
                 # Belief Structure Ablation
                 if self.mode == "threshold":
