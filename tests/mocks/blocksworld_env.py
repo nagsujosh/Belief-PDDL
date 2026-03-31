@@ -1,6 +1,7 @@
 import numpy as np
 from PIL import Image, ImageDraw
 import json
+import random
 from dataclasses import dataclass
 from typing import List, Dict, Any, Tuple
 
@@ -11,7 +12,7 @@ class Observation:
     gt_predicates: List[str]
 
 class MockBlocksworldEnv:
-    def __init__(self, num_blocks=3):
+    def __init__(self, num_blocks=3, seed=None):
         self.num_blocks = num_blocks
         self.blocks = [f"block_{i}" for i in range(num_blocks)]
         self.block_colors = {
@@ -21,10 +22,12 @@ class MockBlocksworldEnv:
             "block_3": "yellow",
             "block_4": "purple"
         }
+        self.rng = random.Random(seed)
         self.reset()
         
-    def reset(self):
-        import random
+    def reset(self, seed=None):
+        if seed is not None:
+            self.rng.seed(seed)
         # Create a procedural randomized state
         self.state = {
             "on_table": set(),
@@ -37,13 +40,13 @@ class MockBlocksworldEnv:
         
         # Shuffle blocks to create random towers
         shuffled = list(self.blocks)
-        random.shuffle(shuffled)
+        self.rng.shuffle(shuffled)
         
         # Build towers
         remaining = set(shuffled)
         while remaining:
             # Pick a random tower height between 1 and remaining
-            h = random.randint(1, len(remaining))
+            h = self.rng.randint(1, len(remaining))
             tower = [remaining.pop() for _ in range(h)]
             
             # Bottom block is on table
@@ -60,7 +63,7 @@ class MockBlocksworldEnv:
         all_blocks = set(self.blocks)
         hidden = set()
         for b in all_blocks:
-            if random.random() < 0.3:
+            if self.rng.random() < 0.3:
                 hidden.add(b)
                 
         self.state["visible"] = all_blocks - hidden

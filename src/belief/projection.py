@@ -35,6 +35,58 @@ class BeliefProjector:
                     vars_set.add(a)
         return list(vars_set)
 
+    def _ground_templates(self, templates: List[str], objects_list: List[str]) -> List[List[str]]:
+        """
+        Ground a list of template literals against the current object vocabulary.
+        Returns one grounded literal list per valid binding.
+        """
+        generic_vars = self._get_generic_vars(templates)
+        grounded_groups = []
+
+        for perm in itertools.product(objects_list, repeat=max(1, len(generic_vars))):
+            bind_map = dict(zip(generic_vars, perm))
+
+            if len(generic_vars) > 1 and len(set(perm)) != len(perm):
+                continue
+
+            grounded = []
+            for template in templates:
+                literal = template
+                for g_var, obj_val in bind_map.items():
+                    literal = literal.replace(f"{g_var}", obj_val)
+                grounded.append(literal)
+            grounded_groups.append(grounded)
+
+        return grounded_groups
+
+    def _ground_union_literals(self, templates: List[str], objects_list: List[str]) -> List[str]:
+        """
+        Ground a disjunctive template group into a single union of literals.
+        Example: ["arm_empty()", "holding(x)"] becomes
+        ["arm_empty()", "holding(block_0)", "holding(block_1)", ...].
+        This is the right semantics for existential completeness constraints.
+        """
+        grounded = []
+        seen = set()
+        for template in templates:
+            generic_vars = self._get_generic_vars([template])
+            if not generic_vars:
+                if template not in seen:
+                    grounded.append(template)
+                    seen.add(template)
+                continue
+
+            for perm in itertools.product(objects_list, repeat=max(1, len(generic_vars))):
+                if len(generic_vars) > 1 and len(set(perm)) != len(perm):
+                    continue
+                literal = template
+                for g_var, obj_val in zip(generic_vars, perm):
+                    literal = literal.replace(f"{g_var}", obj_val)
+                if literal not in seen:
+                    grounded.append(literal)
+                    seen.add(literal)
+        return grounded
+
     def project_top_k_map_states(self, belief_probs: Dict[str, float], k: int = 3) -> List[Dict[str, bool]]:
         """
         Finds the sequentially Top-K Maximum A Posteriori (MAP) assignments 
@@ -108,6 +160,16 @@ class BeliefProjector:
                     if v_if is not None and v_then is not None:
                         if is_not: model.AddImplication(v_if, v_then.Not())
                         else: model.AddImplication(v_if, v_then)
+
+        # C. At-least-one groups. Useful for enforcing state completeness such as
+        # "either the arm is empty or exactly one block is being held".
+        if "at_least_one" in self.constraints:
+            for group in self.constraints["at_least_one"]:
+                templates = group if isinstance(group, list) else group.get("literals", [])
+                grounded_group = self._ground_union_literals(templates, objects_list)
+                grounded_vars = [vars_dict[g] for g in grounded_group if g in vars_dict]
+                if grounded_vars:
+                    model.AddBoolOr(grounded_vars)
 
         # 3. Successive Blocking for Top-K extraction
         top_k_worlds = []

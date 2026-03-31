@@ -11,6 +11,11 @@ mutex:
   # Arm is either empty or holding something
   - ["holding(x)", "arm_empty()"]
 
+at_least_one:
+  # Combined with the mutex rules above, this enforces a complete hand state:
+  # either the arm is empty, or exactly one block is being held.
+  - ["arm_empty()", "holding(x)"]
+
 implications:
   # If x is on y, y is not clear
   - if: "on(x,y)"
@@ -18,10 +23,5 @@ implications:
   # If arm is holding x, x is not clear
   - if: "holding(x)"
     then: "not clear(x)"
-
-visibility_rules:
-  # In Blocksworld, if x is behind y (from agent view), x is not visible
-  # Let's start with a simpler assumed rule: if something is on top, the thing underneath MIGHT be visible or not based on real rendering.
-  # But we can say: held things are always visible.
   - if: "holding(x)"
     then: "visible(x)"

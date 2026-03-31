@@ -192,14 +192,20 @@ venv/bin/python summarize_results.py
 
 ### ALFWorld Evaluation (Full 3D Embodied)
 
-Requires ALFWorld data downloaded and a display (real or virtual framebuffer):
+Requires an ALFWorld text-game dataset root containing generated games
+(`traj_data.json` and `game.tw-pddl`) plus a display when using the visual stack.
+For the current text-first benchmark, pass the dataset root explicitly:
 
 ```bash
-# With GPU + display
-python scripts/run_alfworld_eval.py
+# Text-first symbolic benchmark on the default preset
+python scripts/run_alfworld_eval.py \
+  --task-preset put_egg_in_microwave \
+  --alfworld-data /path/to/alfworld/data
 
 # Headless (SSH / server)
-xvfb-run -a python scripts/run_alfworld_eval.py
+xvfb-run -a python scripts/run_alfworld_eval.py \
+  --task-preset put_egg_in_microwave \
+  --alfworld-data /path/to/alfworld/data
 ```
 
 Results are written to `outputs/eval/alfworld_metrics.json`.

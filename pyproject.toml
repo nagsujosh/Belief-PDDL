@@ -11,6 +11,7 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.9"
+dependencies = [
     "torch>=2.0.0",
     "torchvision",
     "transformers",
@@ -31,3 +32,9 @@ dev = [
     "black",
     "flake8"
 ]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

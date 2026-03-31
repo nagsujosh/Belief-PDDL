@@ -19,6 +19,13 @@ data/raw/
 .vscode/
 *.swp
 
+# Personal notes
+docs/RESEARCH_LOG.md
+
+# Generated packaging metadata
+*.egg-info/
+src/*.egg-info/
+
 # ML Models & Unity Data (ALFWorld HuggingFace caches if local)
 *.ckpt
 *.pt

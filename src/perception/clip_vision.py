@@ -24,12 +24,23 @@ class CLIPVisionBackbone:
 
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
+        elif str(device).startswith("cuda") and not torch.cuda.is_available():
+            print("[CLIP] CUDA requested but unavailable in this runtime; falling back to CPU.")
+            device = "cpu"
 
         self.device = torch.device(device)
         print(f"[CLIP] Loading {model_name} on {self.device}...")
 
-        self.model = CLIPModel.from_pretrained(model_name).to(self.device).eval()
-        self.processor = CLIPProcessor.from_pretrained(model_name)
+        try:
+            self.model = CLIPModel.from_pretrained(model_name, local_files_only=True).to(self.device).eval()
+            self.processor = CLIPProcessor.from_pretrained(
+                model_name,
+                local_files_only=True,
+                use_fast=False,
+            )
+        except Exception:
+            self.model = CLIPModel.from_pretrained(model_name).to(self.device).eval()
+            self.processor = CLIPProcessor.from_pretrained(model_name, use_fast=False)
         self._text_embed_cache: dict[str, torch.Tensor] = {}
         print(f"[CLIP] Model ready.")
 

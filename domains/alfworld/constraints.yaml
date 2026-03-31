@@ -17,6 +17,10 @@ implications:
   - if: "closed(r)"
     then: "not open(r)"
 
+at_least_one:
+  # The target object must be somewhere: held, in a container, or on a surface.
+  - ["holding(agent,x)", "in(x,r)", "on(x,s)"]
+
 visibility_rules:
   # The most important dynamic partial observability constraint for ALFWorld:
   # If an object is inside a receptacle, and the receptacle is NOT completely open, you cannot see it.
