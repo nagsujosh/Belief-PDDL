@@ -4,13 +4,16 @@ This document explains each component of the pipeline in detail — the math, th
 
 ---
 
-## 1. Perception Layer — `src/perception/clip_vision.py`
+## 1. Perception Layer — `src/perception/clip_vision.py`, `src/perception/alfworld_text.py`
 
 ### What it does
-Takes a raw RGB frame from the environment and outputs a **probability score for each symbolic predicate** (e.g. `on(block_0, block_1)`, `clear(block_2)`).
+Converts raw observations into **predicate-level evidence**. The repo currently supports two observation paths:
+
+- **Visual path**: RGB frame -> CLIP / learned heads -> predicate probabilities
+- **Text-first path**: ALFWorld text feedback -> symbolic predicate evidence + negative location evidence
 
 ### How it works
-We use OpenAI CLIP (`clip-vit-base-patch32` by default) as a **zero-shot visual classifier**. For each predicate `P`, we construct two natural language queries:
+For Blocksworld and perception ablations we use OpenAI CLIP (`clip-vit-base-patch32` by default) as a **zero-shot visual classifier**. For each predicate `P`, we construct two natural language queries:
 
 - **Positive**: `"A red block exactly on top of a blue block."`
 - **Negative**: `"A red block is NOT touching the blue block."`
@@ -23,11 +26,18 @@ P(pred = True | image) = softmax([sim(img, pos_text), sim(img, neg_text)])[0]
 
 where `sim` is scaled cosine similarity using CLIP's learned `logit_scale`.
 
+For ALFWorld, the main smoke-test path is currently **text-first**, not CLIP-first. The parser:
+
+- extracts location and inventory facts from textual feedback
+- converts empty-open receptacles / visited surfaces into persistent negative evidence
+- binds the task target to the concrete runtime object instance when metadata is available
+
 ### Key classes
 
 | Class | Purpose |
 |:---|:---|
 | `CLIPVisionBackbone` | Loads model, caches text embeddings, exposes `encode_image()` and `zero_shot_prob()` |
+| `alfworld_text.py` helpers | Parse ALFWorld feedback into symbolic evidence and action effects |
 
 ### Design decision: text embedding cache
 Text descriptions for a given domain are fixed across an episode. We cache them after the first call so per-step cost is just one image forward pass, not `N_predicates × 2` text forward passes.
@@ -127,7 +137,14 @@ score(action a) = Σ_{k: first_action(w_k) = a}  weight(w_k)
 ```
 Execute the action with the highest aggregated score.
 
-**Step 4 — Sensing fallback**: If `max_score < 0.40`, the planner doesn't trust any world enough to act. Instead, compute **Information Gain** for each object:
+**Step 4 — Structured recovery / sensing fallback**: If the planner cannot confidently act, it does not immediately collapse to generic sensing. The current controller includes:
+
+- blocked-action cooldowns
+- shared-subgoal aggregation across solvable worlds
+- plan-pool candidate exploration for unresolved object locations
+- domain-specific recovery sensing when all good plans hinge on hidden or disputed objects
+
+If confidence is still weak, it falls back to information-driven sensing:
 ```
 IG(obj) = H(obj) × (1 - P(visible(obj)))
 
@@ -140,7 +157,7 @@ Emit a `reveal_side(obj)` sensing action targeting the highest-IG object. This c
 ## 5. Deterministic Planner Wrapper — `src/planning/deterministic_planner.py`
 
 ### What it does
-Translates a Python `{predicate: bool}` state dictionary into a valid PDDL problem file, invokes Pyperplan as a subprocess, and parses back the action sequence.
+Translates a Python `{predicate: bool}` state dictionary into a valid PDDL problem file, invokes Pyperplan as a subprocess, and parses back the action sequence. The wrapper now supports typed-object emission, which is needed for the ALFWorld domain.
 
 ### PDDL generation
 The `_generate_problem_pddl()` method dynamically constructs:
@@ -161,26 +178,42 @@ Only predicates with `True` values in the projected world state appear in `:init
 
 ---
 
-## 6. Execution Loop — `src/execution/replan_loop.py`
+## 6. Environment Grounding — `src/envs/alfworld_env.py`, `src/envs/blocksworld_env.py`
+
+The planning layer emits symbolic actions, but real environments often require more specific commands. The ALFWorld wrapper therefore performs an additional grounding step:
+
+- symbolic `take_from_surface agent egg sinkbasin_1`
+- admissible command lookup from the live ALFWorld environment
+- concrete execution such as `take egg 2 from sinkbasin 1`
+
+This grounding layer is important because the symbolic planner reasons over category-level objects while the environment acts on concrete runtime instances.
+
+## 7. Execution Loop — `src/execution/replan_loop.py`, `scripts/run_benchmarks.py`, `scripts/run_alfworld_eval.py`
 
 The outer loop that ties everything together for a single episode:
 
 ```
 while not done and steps < max_steps:
     obs = env.observe()
-    vlm_logits = clip.score(obs.rgb, predicates)
-    belief = updater.update(belief, vlm_logits)
+    pred_evidence = perception(obs)
+    belief = updater.update(belief, pred_evidence)
     top_k = projector.project_top_k_map_states(belief.probs, k=K)
     action, args = planner.select_action(belief.probs, top_k, goal, objects)
     obs, reward, done = env.step(action, args)
     log_metrics(...)
 ```
 
+In ALFWorld, the loop also maintains:
+
+- persistent disproven locations
+- metadata-assisted target binding
+- action-effect updates from live text feedback
+
 ---
 
 ## Ablation Design
 
-Five conditions systematically isolate each component's contribution:
+The Blocksworld benchmark implements the following ablations:
 
 | Mode | Belief | Verifier | Top-K | Sensing |
 |:---|:---:|:---:|:---:|:---:|
@@ -191,3 +224,11 @@ Five conditions systematically isolate each component's contribution:
 | `full_top_k` | ✅ | ✅ | ✅ | ✅ |
 
 Each column adds exactly one component, making the causal contribution of each individually identifiable.
+
+There is also a perception-level comparison path:
+
+- `zero_shot`
+- `calibrated`
+- `learned_head`
+
+ALFWorld is currently at the smoke-test / transfer-validation stage rather than a full ablation matrix.

@@ -4,13 +4,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![OR-Tools](https://img.shields.io/badge/solver-OR--Tools%20CP--SAT-orange.svg)](https://developers.google.com/optimization)
 
-A general neuro-symbolic planning framework that maintains **factorized symbolic belief states**, projects them through a **CP-SAT constraint compiler**, and plans over the **Top-K feasible worlds** with active uncertainty-driven sensing.
+A neuro-symbolic planning framework that maintains **factorized symbolic belief states**, projects them through a **CP-SAT constraint compiler**, and plans over the **Top-K feasible worlds** with active uncertainty-driven sensing.
 
 ---
 
 ## Research Goal
 
-Classical AI planning assumes a fully observed, logically consistent world state. In practice, visual perception models (VLMs, classifiers) output noisy, **physically inconsistent** predicate estimates — e.g. simultaneously predicting a block is both `held` and `on_table`. Feeding such states directly into a symbolic planner causes catastrophic failures.
+Classical AI planning assumes a fully observed, logically consistent world state. In practice, perception systems produce noisy, **physically inconsistent** predicate estimates — e.g. simultaneously predicting a block is both `held` and `on_table`, or failing to bind the correct target instance in a cluttered household scene. Feeding such states directly into a symbolic planner causes catastrophic failures.
 
 This framework answers: **how do we plan reliably when perception is noisy and the logical state space is partially observed?**
 
@@ -18,6 +18,7 @@ The core contribution is a three-stage pipeline:
 1. **Factorized Bayesian belief tracking** over grounded predicates
 2. **Constraint-based symbolic projection** (CP-SAT MAP inference) to eliminate physically impossible world states
 3. **Top-K world planning with active sensing** to act under irreducible uncertainty
+4. **Environment-specific grounding** to map symbolic actions back to executable commands
 
 ---
 
@@ -26,8 +27,8 @@ The core contribution is a three-stage pipeline:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Perception Layer                           │
-│   RGB Frame → CLIP Vision Backbone → Per-predicate logits       │
-│   (src/perception/clip_vision.py)                               │
+│   RGB → CLIP / learned heads  OR  text → symbolic parser        │
+│   (src/perception/clip_vision.py, alfworld_text.py)             │
 └───────────────────────────┬─────────────────────────────────────┘
                             │  raw probabilities p̂(pred_i)
                             ▼
@@ -59,6 +60,56 @@ The core contribution is a three-stage pipeline:
 ```
 
 For a deeper walkthrough see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+---
+
+## Latest Validated Results
+
+### Blocksworld
+
+Corrected fixed-seed sweeps (`seeds=0..4`, `3` episodes per seed) show that the repaired projection layer makes the full planner robust across substantial observation noise.
+
+| Setting | Success | Avg. Steps | Avg. Sensing | Source |
+|:---|:---:|:---:|:---:|:---|
+| `full_top_k`, `zero_shot`, `noise=0.5`, `decay=0.7` | `100%` | `4.2` | `1.0` | local seed sweep |
+| `full_top_k`, `calibrated`, `noise=0.5`, `decay=0.7` | `100%` | `5.5` | `1.3` | local seed sweep |
+| `full_top_k`, `learned_head`, `noise=0.5`, `decay=0.7` | `100%` | `4.13` | `0.87` | local seed sweep |
+| `full_top_k`, `zero_shot`, `noise=0.7`, `decay=0.7` | `100%` | `4.53` | `0.87` | local seed sweep |
+| `full_top_k`, `learned_head`, `noise=0.7`, `decay=0.7` | `100%` | `4.07` | `1.0` | local seed sweep |
+| `full_top_k`, `zero_shot`, `noise=0.9`, `decay=0.7` | `100%` | `4.33` | `0.8` | local seed sweep |
+
+### ALFWorld
+
+The current ALFWorld smoke test `put_egg_in_microwave` now succeeds end to end in `5` steps:
+
+1. `goto_location sinkbasin_1`
+2. `take_from_surface egg sinkbasin_1`
+3. `goto_location microwave_1`
+4. `open_receptacle microwave_1`
+5. `put_in_container egg microwave_1`
+
+This result is currently a **smoke-test success**, not yet a full ALFWorld benchmark table.
+
+### What Counts As a Baseline Here
+
+Implemented Blocksworld planning baselines:
+
+- `threshold`: hard-threshold predicates, no belief state, no projection
+- `belief_no_verifier`: belief update only, no projection
+- `belief_plus_verifier`: belief update plus single projected world
+- `full_top_k_no_sense`: Top-K projection without sensing fallback
+- `full_top_k`: full system
+
+Implemented perception baselines:
+
+- `zero_shot`
+- `calibrated`
+- `learned_head`
+
+Current public-ready result story:
+
+- Blocksworld baseline machinery is implemented and the corrected full-system sweeps are strong.
+- ALFWorld is now working as a live environment path, but still needs a broader comparative evaluation before claiming benchmark-level superiority.
 
 ---
 
@@ -131,8 +182,8 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install -r requirements.txt
 pip install -e .
 
-# 5. Download ALFWorld scenes (~3-5 GB, only needed for ALFWorld eval)
-export ALFWORLD_DATA=~/.alfworld
+# 5. Download ALFWorld data (~3-5 GB, only needed for ALFWorld eval)
+export ALFWORLD_DATA=~/.cache/alfworld
 alfworld-download && alfworld-download --extra
 ```
 
@@ -147,30 +198,30 @@ docker run --gpus all -v $(pwd)/outputs:/app/outputs belief-pddl
 
 ## Running Experiments
 
-### Blocksworld Ablation Suite (Primary Results)
+### Blocksworld Ablation Suite
 
-Run the full ablation matrix (Table 1, Figure 2, Table 3 from the paper):
+Run the full ablation matrix:
 
 ```bash
 ./run_all_experiments.sh
 ```
 
-This sequentially runs all five ablation conditions and writes results to `outputs/benchmarks/*.jsonl`.
+This sequentially runs the main ablation conditions and writes results to `outputs/benchmarks/*.jsonl`.
 
 **Run a single condition manually:**
 
 ```bash
 # Full system: Belief + CP-SAT + Top-K + Active Sensing
-venv/bin/python scripts/run_benchmarks.py --mode full_top_k --noise 0.3 --k 3 --episodes 10
+python scripts/run_benchmarks.py --mode full_top_k --noise 0.3 --k 3 --episodes 10
 
 # Ablation: no verifier (raw belief → planner)
-venv/bin/python scripts/run_benchmarks.py --mode belief_no_verifier --noise 0.3 --episodes 10
+python scripts/run_benchmarks.py --mode belief_no_verifier --noise 0.3 --episodes 10
 
 # Ablation: no sensing (Top-K but no IG fallback)
-venv/bin/python scripts/run_benchmarks.py --mode full_top_k_no_sense --noise 0.5 --k 3 --episodes 10
+python scripts/run_benchmarks.py --mode full_top_k_no_sense --noise 0.5 --k 3 --episodes 10
 
 # Baseline: hard threshold (VLM prob > 0.5 → True)
-venv/bin/python scripts/run_benchmarks.py --mode threshold --noise 0.3 --episodes 10
+python scripts/run_benchmarks.py --mode threshold --noise 0.3 --episodes 10
 ```
 
 **CLI Arguments for `run_benchmarks.py`:**
@@ -185,7 +236,24 @@ venv/bin/python scripts/run_benchmarks.py --mode threshold --noise 0.3 --episode
 **Summarize results after a run:**
 
 ```bash
-venv/bin/python summarize_results.py
+python summarize_results.py
+```
+
+**Recommended fixed-seed comparison run:**
+
+```bash
+python scripts/run_seed_sweep.py \
+  --mode full_top_k \
+  --noise 0.5 \
+  --episodes 3 \
+  --k 3 \
+  --alpha 1.0 \
+  --decay 0.7 \
+  --device cuda \
+  --perception-mode learned_head \
+  --learned-head-path outputs/perception/perception_compare_e200_learned_head.pt \
+  --seeds 0,1,2,3,4 \
+  --output outputs/benchmarks/seed_sweep_noise_0.5_decay_0.7_learned_head.json
 ```
 
 ---
@@ -209,6 +277,19 @@ xvfb-run -a python scripts/run_alfworld_eval.py \
 ```
 
 Results are written to `outputs/eval/alfworld_metrics.json`.
+
+The current validated smoke task is:
+
+```bash
+python scripts/run_alfworld_eval.py \
+  --task-preset put_egg_in_microwave \
+  --alfworld-data ~/.cache/alfworld \
+  --episodes 1 \
+  --max-steps 15 \
+  --alpha 1.0 \
+  --decay 1.0 \
+  --k 3
+```
 
 ---
 
@@ -294,9 +375,9 @@ Adding a new domain requires only: `constraints.yaml`, `predicates.yaml`, `domai
 
 ## Output Files
 
-All results are written to `outputs/benchmarks/<mode>_noise_<noise>.jsonl`.
+Benchmark outputs are written to `outputs/benchmarks/` with descriptive filenames that may include noise, alpha, decay, perception mode, and seed.
 
-Each line is one episode:
+Per-episode JSONL outputs look like:
 ```json
 {
   "episode": 0,
@@ -309,6 +390,13 @@ Each line is one episode:
   "replans": 0
 }
 ```
+
+Aggregate seed sweeps and ALFWorld smoke traces are also written under:
+
+- `outputs/benchmarks/*.json`
+- `outputs/eval/*.json`
+
+Note: `outputs/` is gitignored, so if you want results visible on GitHub, summarize them in the README or another committed doc.
 
 ---
 
